@@ -12,7 +12,8 @@ int main()
     int server_file_descriptor;
     int client_file_descriptor;
     int epoll_file_descriptor;
-    struct epoll_event ev; // to add a event listener, to specify what events to register struct epoll_event events[20]; // to accept triggered events
+    struct epoll_event ev; // to add a event listener, to specify what events to register 
+    struct epoll_event events[20]; // to accept triggered events
     int number_of_events;
     int i, bytes_read;
     char buffer[1025];
