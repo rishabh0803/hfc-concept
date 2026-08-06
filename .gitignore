@@ -42,3 +42,9 @@
 *.dwo
 "*.zip" 
 "*.zip" 
+
+
+pdf/
+*.pdf
+
+
