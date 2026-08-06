@@ -30,6 +30,7 @@ struct user_data
 {
     int file_descriptor;
     operation_type_t operation_type;
+    char buffer[4096];
 };
 
 // ------------------------------- System Call Wrappers for io_uring -------------------------------
@@ -81,7 +82,7 @@ int main()
         return EXIT_FAILURE;
     }
 
-    // IO_URING Setup Starts
+    // --------------- IO_URING Setup Starts ---------------
     int ring_file_descriptor;
     struct io_uring_params p;
     memset(&p, 0, sizeof(p));
@@ -104,7 +105,9 @@ int main()
         cout << "Mapping failed" << endl;
         return EXIT_FAILURE;
     }
+    // --------------- IO_URING Setup Starts ---------------
 
+    // Setting up submission queue entries
     size_t mmap_size_of_submission_queue_entries = sizeof(struct io_uring_sqe) * p.sq_entries;
     struct io_uring_sqe *submission_queue_entries;
     submission_queue_entries = (struct io_uring_sqe *)mmap(NULL, mmap_size_of_submission_queue_entries, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_file_descriptor, IORING_OFF_SQES);
@@ -117,7 +120,7 @@ int main()
         return EXIT_FAILURE;
     }
 
-    // Setting up submission queue
+    // Adding an accept operation to the submission queue
     __u32 submission_queue_tail = *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail));
     __u32 submission_queue_ring_mask = *((__u32 *)(((char *)sq_ptr) + p.sq_off.ring_mask));
     __u32 *array = ((__u32 *)(((char *)sq_ptr) + p.sq_off.array));
@@ -137,22 +140,170 @@ int main()
 
     submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
     if (*((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) != submission_queue_tail)
-    {
         *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) = submission_queue_tail;
-    }
 
+    // Setting up completion queue entries
+    void *cq_ptr = sq_ptr;
+    struct io_uring_cqe *completion_queue_entries;
+    __u32 completion_queue_head = *((__u32 *)(((char *)cq_ptr) + p.cq_off.head));
+    __u32 completion_queue_ring_mask = *((__u32 *)(((char *)cq_ptr) + p.cq_off.ring_mask));
+    completion_queue_entries = (struct io_uring_cqe *)(((char *)cq_ptr) + p.cq_off.cqes);
+    struct io_uring_cqe *cq_entry;
+    struct user_data *u_d;
+
+    // Server is ready to accept requests
     cout << "Server is ready to accept request on port 3500" << endl;
 
     int r;
     int entries_added = 1;
+    int bytes_read = 0;
 
     while (1)
     {
         r = io_uring_enter(ring_file_descriptor, entries_added, 1, IORING_ENTER_GETEVENTS);
         entries_added = 0;
 
-        cout << "Continuing to accept requests..." << endl;
-        break;
+        while (1)
+        {
+            if (completion_queue_head == *((__u32 *)(((char *)cq_ptr) + p.cq_off.tail)))
+                break;
+
+            cq_entry = &completion_queue_entries[completion_queue_head & completion_queue_ring_mask];
+            u_d = (struct user_data *)cq_entry->user_data;
+
+            if (u_d->operation_type == ACCEPT_OPERATION)
+            {
+                printf("Accept part completed\n");
+                client_file_descriptor = cq_entry->res;
+
+                // Adding a read operation to the submission queue
+                submission_queue_tail = *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail));
+                submission_queue_ring_mask = *((__u32 *)(((char *)sq_ptr) + p.sq_off.ring_mask));
+                array = ((__u32 *)(((char *)sq_ptr) + p.sq_off.array));
+                index = submission_queue_tail & submission_queue_ring_mask;
+                array[index] = index;
+
+                u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                u_data->file_descriptor = client_file_descriptor;
+                u_data->operation_type = READ_OPERATION;
+
+                sq_entry = &submission_queue_entries[index];
+                memset(sq_entry, 0, sizeof(struct io_uring_sqe));
+                sq_entry->opcode = IORING_OP_READ;
+                sq_entry->fd = client_file_descriptor;
+                sq_entry->flags = 0;
+                sq_entry->off = 0;
+                sq_entry->len = 4096;
+                sq_entry->addr = (__u64)u_data->buffer;
+                sq_entry->user_data = (__u64)u_data;
+
+                submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
+                if (*((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) != submission_queue_tail)
+                    *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) = submission_queue_tail;
+
+                ++entries_added;
+
+                // Adding a Accept operation to the submission queue
+                submission_queue_tail = *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail));
+                submission_queue_ring_mask = *((__u32 *)(((char *)sq_ptr) + p.sq_off.ring_mask));
+                array = ((__u32 *)(((char *)sq_ptr) + p.sq_off.array));
+                index = submission_queue_tail & submission_queue_ring_mask;
+                array[index] = index;
+
+                u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                u_data->file_descriptor = server_file_descriptor;
+                u_data->operation_type = ACCEPT_OPERATION;
+
+                sq_entry = &submission_queue_entries[index];
+                memset(sq_entry, 0, sizeof(struct io_uring_sqe));
+                sq_entry->opcode = IORING_OP_ACCEPT;
+                sq_entry->fd = server_file_descriptor;
+                sq_entry->flags = 0;
+                sq_entry->off = 0;
+                sq_entry->user_data = (__u64)u_data;
+                submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
+                if (*((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) != submission_queue_tail)
+                    *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) = submission_queue_tail;
+
+                ++entries_added;
+            }
+            else if (u_d->operation_type == READ_OPERATION)
+            {
+                printf("Read part completed\n");
+                bytes_read = cq_entry->res;
+                if (bytes_read == 0)
+                    close(u_d->file_descriptor);
+                else
+                {
+                    // process data against u_d->buffer (not doing anything now)
+
+                    // Adding a write operation to the submission queue
+                    submission_queue_tail = *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail));
+                    submission_queue_ring_mask = *((__u32 *)(((char *)sq_ptr) + p.sq_off.ring_mask));
+                    array = ((__u32 *)(((char *)sq_ptr) + p.sq_off.array));
+                    index = submission_queue_tail & submission_queue_ring_mask;
+                    array[index] = index;
+
+                    u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                    u_data->file_descriptor = u_d->file_descriptor;
+                    u_data->operation_type = WRITE_OPERATION;
+
+                    sq_entry = &submission_queue_entries[index];
+                    memset(sq_entry, 0, sizeof(struct io_uring_sqe));
+                    sq_entry->opcode = IORING_OP_WRITE;
+                    sq_entry->fd = u_d->file_descriptor;
+                    sq_entry->flags = 0;
+                    sq_entry->off = 0;
+                    sq_entry->len = bytes_read;
+                    memcpy(u_data->buffer, u_d->buffer, bytes_read);
+                    sq_entry->addr = (__u64)u_data->buffer;
+                    sq_entry->user_data = (__u64)u_data;
+
+                    submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
+                    if (*((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) != submission_queue_tail)
+                        *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) = submission_queue_tail;
+
+                    ++entries_added;
+                }
+            }
+            else if (u_d->operation_type == WRITE_OPERATION)
+            {
+                printf("Write part completed\n");
+
+                // Adding a read operation to the submission queue
+                submission_queue_tail = *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail));
+                submission_queue_ring_mask = *((__u32 *)(((char *)sq_ptr) + p.sq_off.ring_mask));
+                array = ((__u32 *)(((char *)sq_ptr) + p.sq_off.array));
+                index = submission_queue_tail & submission_queue_ring_mask;
+                array[index] = index;
+
+                u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                u_data->file_descriptor = u_d->file_descriptor;
+                u_data->operation_type = READ_OPERATION;
+
+                sq_entry = &submission_queue_entries[index];
+                memset(sq_entry, 0, sizeof(struct io_uring_sqe));
+                sq_entry->opcode = IORING_OP_READ;
+                sq_entry->fd = u_d->file_descriptor;
+                sq_entry->flags = 0;
+                sq_entry->off = 0;
+                sq_entry->len = 4096;
+                sq_entry->addr = (__u64)u_data->buffer;
+                sq_entry->user_data = (__u64)u_data;
+
+                submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
+                if (*((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) != submission_queue_tail)
+                    *((__u32 *)(((char *)sq_ptr) + p.sq_off.tail)) = submission_queue_tail;
+
+                ++entries_added;
+            }
+
+            free(u_d);
+
+            completion_queue_head = (completion_queue_head + 1) & completion_queue_ring_mask;
+            if (completion_queue_head != *((__u32 *)(((char *)cq_ptr) + p.cq_off.head)))
+                *((__u32 *)(((char *)cq_ptr) + p.cq_off.head)) = completion_queue_head;
+        }
     }
 
     // TODO:: Cleanup
