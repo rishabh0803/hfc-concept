@@ -265,27 +265,26 @@ int tcp_configure_server(int port)
 }
 int my_uring_setup(int queue_depth)
 {
-    memset(&(global_s.uring_params), 0, sizeof(struct io_uring_params)); // set all bytes to 0 int ring_file_descriptor=(int) syscall(__NR_io_uring_setup,queue_depth,&(global_s.uring_params));
+    memset(&(global_s.uring_params), 0, sizeof(struct io_uring_params));
+    // set all bytes to 0
+    int ring_file_descriptor = (int)syscall(__NR_io_uring_setup, queue_depth, &(global_s.uring_params));
     if (ring_file_descriptor < 0)
     {
         global_s.error = MY_URING_SETUP_ERROR;
         return -1;
     }
-    __u32 size_of_sqring = global_s.uring_params.sq_off.array + global_s.uring_params.sq_entries * sizeof(unsi
-                                                                                                              gned int);
-    __u32 size_of_cqring = global_s.uring_params.cq_off.cqes + global_s.uring_params.cq_entries * sizeof(struc
-                                                                                                             t io_uring_cqe);
+    __u32 size_of_sqring = global_s.uring_params.sq_off.array + global_s.uring_params.sq_entries * sizeof(unsigned int);
+    __u32 size_of_cqring = global_s.uring_params.cq_off.cqes + global_s.uring_params.cq_entries * sizeof(struct io_uring_cqe);
     global_s.mmap_size = (size_of_sqring > size_of_cqring) ? size_of_sqring : size_of_cqring;
-    global_s.sq_ptr = mmap(NULL, global_s.mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_f ile_descriptor, IORING_OFF_SQ_RING);
+    global_s.sq_ptr = mmap(NULL, global_s.mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_file_descriptor, IORING_OFF_SQ_RING);
     if (global_s.sq_ptr == MAP_FAILED)
     {
         close(ring_file_descriptor);
         global_s.error = MY_URING_MAP_FAILED;
         return -1;
     }
-    global_s.mmap_size_of_submission_queue_entries = sizeof(struct io_uring_sqe) * global_s.uring_params.sq_
-                                                                                       entries;
-    global_s.submission_queue_entries = (struct io_uring_sqe *)mmap(NULL, global_s.mmap_size_of_submission_ queue_entries, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_file_descriptor, IORING_OFF_SQES);
+    global_s.mmap_size_of_submission_queue_entries = sizeof(struct io_uring_sqe) * global_s.uring_params.sq_entries;
+    global_s.submission_queue_entries = (struct io_uring_sqe *)mmap(NULL, global_s.mmap_size_of_submission_queue_entries, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_file_descriptor, IORING_OFF_SQES);
     if (global_s.submission_queue_entries == MAP_FAILED)
     {
         munmap(global_s.sq_ptr, global_s.mmap_size);
@@ -294,16 +293,16 @@ int my_uring_setup(int queue_depth)
         global_s.error = MY_URING_SQ_MAP_ERROR;
         return -1;
     }
-    global_s.cq_ptr = global_s.sq_ptr; //__u32 completion_queue_head=*((__u32 *)(((char *)cq_ptr)+p.cq_off.head)); //__u32 completion_queue_ring_mask=*((__u32 *)(((char *)cq_ptr)+p.cq_off.ring_mask)); global_s.completion_queue_entries= (struct io_uring_cqe *)(((char *)(global_s.cq_ptr))+global_s.urin
-g_params.cq_off.cqes);
-return ring_file_descriptor;
+    global_s.cq_ptr = global_s.sq_ptr;
+    //__u32 completion_queue_head=*((__u32 *)(((char *)cq_ptr)+p.cq_off.head));
+    //__u32 completion_queue_ring_mask=*((__u32 *)(((char *)cq_ptr)+p.cq_off.ring_mask));
+    global_s.completion_queue_entries = (struct io_uring_cqe *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.cqes);
+    return ring_file_descriptor;
 }
 int my_uring_enque_accept_task(int ring_file_descriptor, int server_file_descriptor)
 {
-    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tai
-                                                                                l));
-    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_of
-                                                                                     f.ring_mask));
+    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail));
+    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.ring_mask));
     __u32 *array = ((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.array));
     __u32 index = submission_queue_tail & submission_queue_ring_mask;
     array[index] = index;
@@ -324,8 +323,7 @@ int my_uring_enque_accept_task(int ring_file_descriptor, int server_file_descrip
     sq_entry->off = 0;
     sq_entry->user_data = (__u64)u_data;
     submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
-    if (*((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail)) != submission_queue_tai
-                                                                                             l)
+    if (*((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail)) != submission_queue_tail)
     {
         *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail)) = submission_queue_tail;
     }
@@ -333,19 +331,17 @@ int my_uring_enque_accept_task(int ring_file_descriptor, int server_file_descrip
 }
 int my_uring_get_events(int ring_file_descriptor, int entries_added, int minimum_completed)
 {
-    return (int)syscall(__NR_io_uring_enter, ring_file_descriptor, entries_added, minimum_completed, IORING _ENTER_GETEVENTS, NULL, 0);
+    return (int)syscall(__NR_io_uring_enter, ring_file_descriptor, entries_added, minimum_completed, IORING_ENTER_GETEVENTS, NULL, 0);
 }
 int my_uring_is_completion_queue_empty(int ring_file_descriptor)
 {
-    return *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.head)) == *((__u32 *)(((ch ar *)global_s.cq_ptr) + global_s.uring_params.cq_off.tail));
+    return *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.head)) == *((__u32 *)(((char *)global_s.cq_ptr) + global_s.uring_params.cq_off.tail));
 }
 struct io_uring_cqe *my_uring_get_cq_entry(int ring_file_descriptor)
 {
-    __u32 completion_queue_head = *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.hea
-                                                                                d));
+    __u32 completion_queue_head = *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.head));
     __u32 head = completion_queue_head;
-    __u32 completion_queue_ring_mask = *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_of
-                                                                                     f.ring_mask));
+    __u32 completion_queue_ring_mask = *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.ring_mask));
     completion_queue_head = (completion_queue_head + 1) & completion_queue_ring_mask;
     if (completion_queue_head != *((__u32 *)(((char *)(global_s.cq_ptr)) + global_s.uring_params.cq_off.head)))
     {
@@ -357,12 +353,10 @@ int my_uring_get_operation(struct io_uring_cqe *cq_entry)
 {
     return ((struct user_data *)cq_entry->user_data)->operation_type;
 }
-int my_uring_enque_network_recv_task(int ring_file_descriptor, struct user_data *u_data, int buffer_si ze, int msg_flags)
+int my_uring_enque_network_recv_task(int ring_file_descriptor, struct user_data *u_data, int buffer_size, int msg_flags)
 {
-    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.ta
-                                                                                il));
-    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_o
-                                                                                     ff.ring_mask));
+    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail));
+    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.ring_mask));
     __u32 *array = ((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.array));
     int index = submission_queue_tail & submission_queue_ring_mask;
     array[index] = index;
@@ -377,19 +371,16 @@ int my_uring_enque_network_recv_task(int ring_file_descriptor, struct user_data 
     sq_entry->addr = (__u64)u_data->buffer;
     sq_entry->user_data = (__u64)u_data;
     submission_queue_tail = (submission_queue_tail + 1) & submission_queue_ring_mask;
-    if (*((__u32 *)(((char *)(global_s.sq_ptr) + global_s.uring_params.sq_off.tail))) != submission_queue_ta
-                                                                                             il)
+    if (*((__u32 *)(((char *)(global_s.sq_ptr) + global_s.uring_params.sq_off.tail))) != submission_queue_tail)
     {
         *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail)) = submission_queue_tail;
     }
     return SUCCESS;
 }
-int my_uring_enque_network_send_task(int ring_file_descriptor, struct user_data *sq_user_data, int byt es_to_write)
+int my_uring_enque_network_send_task(int ring_file_descriptor, struct user_data *sq_user_data, int bytes_to_write)
 {
-    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.ta
-                                                                                il));
-    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_o
-                                                                                     ff.ring_mask));
+    __u32 submission_queue_tail = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.tail));
+    __u32 submission_queue_ring_mask = *((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.ring_mask));
     __u32 *array = ((__u32 *)(((char *)(global_s.sq_ptr)) + global_s.uring_params.sq_off.array));
     int index = submission_queue_tail & submission_queue_ring_mask;
     array[index] = index;
@@ -474,7 +465,8 @@ int main()
             if (my_uring_get_operation(cq_entry) == ACCEPT_OPERATION)
             {
                 printf("Accept part completed\n");
-                // add entry for read operation 	struct user_data *u_data=(struct user_data *)malloc(sizeof(struct user_data));
+                // add entry for read operation
+                struct user_data *u_data = (struct user_data *)malloc(sizeof(struct user_data));
                 u_data->socket_file_descriptor = cq_entry->res;
                 u_data->operation_type = RECV_OPERATION;
                 u_data->file_descriptor = 0;
@@ -482,7 +474,8 @@ int main()
                 u_data->target_path = nullptr;
                 my_uring_enque_network_recv_task(ring_file_descriptor, u_data, 8192, MSG_WAITALL);
                 ++entries_added;
-                // add entry for accept operation 	my_uring_enque_accept_task(ring_file_descriptor,server_file_descriptor);
+                // add entry for accept operation
+                my_uring_enque_accept_task(ring_file_descriptor, server_file_descriptor);
                 ++entries_added;
             }
             else if (my_uring_get_operation(cq_entry) == RECV_OPERATION)
@@ -516,9 +509,11 @@ int main()
                         }
                         free(cq_user_data);
                         continue;
-                    } // process cq_user_data->buffer on the basis of bytes_read
+                    }
+                    // process cq_user_data->buffer on the basis of bytes_read
                     // ?? what processing
-                    // cast it to request_packet * 	request_packet *req_pkt=(request_packet *)cq_user_data->buffer;
+                    // cast it to request_packet *
+                    request_packet *req_pkt = (request_packet *)cq_user_data->buffer;
                     // check packet type
                     cout << req_pkt->packet_type << " packet" << endl;
                     if (req_pkt->packet_type == HANDSHAKE_PACKET)
@@ -528,8 +523,7 @@ int main()
                         // cast it to handshake request packet
                         handshake_request_packet *handshake_req_pkt;
                         handshake_req_pkt = (handshake_request_packet *)req_pkt;
-                        if (handshake_req_pkt->operation == COPY_FILE || handshake_req_pkt->operation == CREATE_DIRECTORY_AND_CO
-                                                                                                             PY_FILE)
+                        if (handshake_req_pkt->operation == COPY_FILE || handshake_req_pkt->operation == CREATE_DIRECTORY_AND_COPY_FILE)
                         {
                             struct stat s;
                             if (stat(handshake_req_pkt->buffer, &s) == 0 && S_ISDIR(s.st_mode))
@@ -545,7 +539,7 @@ int main()
                                     strcpy(handshake_req_pkt->buffer + last_index + 2, handshake_req_pkt->filename);
                                 }
                             }
-                            handshake_res_pkt->operation_status = can_copy(handshake_req_pkt->buffer, handshake_res_pkt->buffer, han dshake_req_pkt->overwrite, handshake_req_pkt->operation);
+                            handshake_res_pkt->operation_status = can_copy(handshake_req_pkt->buffer, handshake_res_pkt->buffer, handshake_req_pkt->overwrite, handshake_req_pkt->operation);
                             int file_descriptor;
                             cout << "Can copy : " << handshake_res_pkt->operation_status << endl;
                             if (handshake_res_pkt->operation_status)
@@ -564,7 +558,10 @@ int main()
                                     handshake_res_pkt->operation_status = (char)0;
                                 }
                             }
-                            // enque write task 	sq_user_data=(struct user_data *)malloc(sizeof(struct user_data)); 	sq_user_data->socket_file_descriptor=cq_user_data->socket_file_descriptor; 	memcpy(sq_user_data->buffer,handshake_res_pkt,sizeof(handshake_response_packet));
+                            // enque write task
+                            sq_user_data = (struct user_data *)malloc(sizeof(struct user_data));
+                            sq_user_data->socket_file_descriptor = cq_user_data->socket_file_descriptor;
+                            memcpy(sq_user_data->buffer, handshake_res_pkt, sizeof(handshake_response_packet));
                             bytes_to_write = sizeof(handshake_response_packet);
                             my_uring_enque_network_send_task(ring_file_descriptor, sq_user_data, bytes_to_write);
                             ++entries_added;
@@ -602,7 +599,11 @@ int main()
                             memcpy(sq_user_data->buffer, handshake_res_pkt, sizeof(handshake_response_packet));
                             bytes_to_write = sizeof(handshake_response_packet);
                             my_uring_enque_network_send_task(ring_file_descriptor, sq_user_data, bytes_to_write);
-                            ++entries_added; // enquing recv task so that when client closes connection 	// the client descriptor / resources on the server side is released 	struct user_data *u_data=(struct user_data *)malloc(sizeof(struct user_data));	 	u_data->socket_file_descriptor=cq_user_data->socket_file_descriptor;
+                            ++entries_added;
+                            // enquing recv task so that when client closes connection
+                            // the client descriptor / resources on the server side is released
+                            struct user_data *u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                            u_data->socket_file_descriptor = cq_user_data->socket_file_descriptor;
                             u_data->file_descriptor = 0;
                             u_data->operation_type = RECV_OPERATION;
                             u_data->tmp_path = nullptr;
@@ -614,7 +615,8 @@ int main()
                             ++entries_added;
                         } // MKDIR part ends
                         free(handshake_res_pkt);
-                    } // HANDSHARE PACKET PART COMPLETED 	else if(req_pkt->packet_type==FILE_DATA_PACKET) // FILE_DATA_PACKET PART starts
+                    } // HANDSHARE PACKET PART COMPLETED 	
+                    else if(req_pkt->packet_type==FILE_DATA_PACKET) // FILE_DATA_PACKET PART starts
                     {
                         if (cq_user_data->file_descriptor == 0)
                         {
@@ -641,7 +643,8 @@ int main()
                         {
                             // file upload complete, notify client by enquing a write task
                             response_packet res_pkt;
-                            res_pkt.buffer[0] = 'D'; // D for done
+                            res_pkt.buffer[0] = 'D'; 
+                            // D for done
                             res_pkt.buffer[1] = '\0';
                             close(cq_user_data->file_descriptor);
                             rename(tmp_path, target_path);
@@ -661,7 +664,10 @@ int main()
                             ++entries_added;
                         }
                         else
-                        { // all part not done, enque read task for the client descriptor 	struct user_data *u_data=(struct user_data *)malloc(sizeof(struct user_data));	 	u_data->socket_file_descriptor=cq_user_data->socket_file_descriptor; 	u_data->file_descriptor=cq_user_data->file_descriptor;
+                        { // all part not done, enque read task for the client descriptor
+                            struct user_data *u_data = (struct user_data *)malloc(sizeof(struct user_data));
+                            u_data->socket_file_descriptor = cq_user_data->socket_file_descriptor;
+                            u_data->file_descriptor = cq_user_data->file_descriptor;
                             u_data->target_path = target_path;
                             u_data->tmp_path = tmp_path;
                             u_data->operation_type = RECV_OPERATION;
@@ -677,14 +683,16 @@ int main()
             else if (my_uring_get_operation(cq_entry) == WRITE_OPERATION)
             {
                 printf("Write part completed\n");
-                // add entry for read operation 	//my_uring_enque_network_read_task(ring_file_descriptor,cq_entry,4096);
+                // add entry for read operation 	
+                //my_uring_enque_network_read_task(ring_file_descriptor,cq_entry,4096);
                 //++entries_added;
             }
             free(cq_user_data);
         }
         // extraction from completion queue ends here
     }
-    // clean up code static_assert(sizeof(handshake_request_packet)==8192,"struct _handshake_request_packet is not of 819
-    2 "); static_assert(sizeof(request_packet)==8192," struct _request_packet is not of 8192 ");
-        return 0;
+    // clean up code
+    static_assert(sizeof(handshake_request_packet) == 8192, "struct _handshake_request_packet is not of 8192");
+    static_assert(sizeof(request_packet) == 8192, " struct _request_packet is not of 8192 ");
+    return 0;
 }
